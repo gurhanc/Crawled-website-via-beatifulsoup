@@ -1,0 +1,121 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+"""
+This code below fetches KAP (Turkish public disclosure platform) news and try to alert user about possible case of bond default if any.
+Producing messages *may* not mean that a bond is actually defaulted. Accuracy of the output relies on keywords selected
+in regex expression.
+"""
+
+import datetime
+import json
+import time
+import locale
+import urllib3
+from bs4 import BeautifulSoup
+import requests
+import re
+import sys
+import copy
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
+from email.utils import formatdate
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+web_charset = "utf-8"
+mail_charset = "utf-8"
+targeturl = "https://www.kap.org.tr/tr/ara/%22%C3%B6deme%20yap%C4%B1lamama%20nedeni%22/1"  # Target URL for scraping
+now = datetime.datetime.today()
+keyword = str(now.strftime("%d/%m/%Y"))  # Keyword is today's date.
+from_address = "@gmail.com"  # Sender address (Gmail address)
+from_password = ""  # Sender server password (Gmail password)
+to_address = ""  # Recipient address you'd like to sent
+statusOK = u"Found / "
+statusNG = u"Not Found"
+
+
+def scraping(url):
+	linkList = []
+	tarihList = []
+	already_found_Keys = []
+	toBeDeleted = []
+	keysList = []
+	page = requests.get(url)
+	soup = BeautifulSoup(page.content, "html.parser")
+	divs = soup.findAll("div", attrs={'class': 'searchResult disclosure'})
+	for div in divs:
+		link = div.find("a", href=True)
+		link = "https://www.kap.org.tr/" + link.get("href")
+		linkList.append(link)
+	divs2 = soup.findAll("div", attrs={'class': 'lastChangeDate'})
+	for divs in divs2:
+		tarih = divs.find(text=re.compile(keyword))
+		if tarih != None:
+			tarih = tarih.strip()
+		tarihList.append(tarih)
+	myDict = dict(zip(linkList, tarihList))
+	for key, value in myDict.items():
+		if value is None:
+			toBeDeleted.append(key)
+	for z in toBeDeleted:
+		del myDict[z]
+	for key, value in myDict.items():
+		keysList.append(key)
+	if myDict is None:
+		return statusNG
+	else:
+		with open("temerrut.txt", "r") as temerrut:  
+			for line in temerrut.readlines():
+				if line.strip() in keysList:
+					already_found_Keys.append(line.strip())
+					keysList.remove(line.strip())
+		if keysList is None:
+			return StatusNG
+		else:
+			with open("temerrut.txt","a") as temerrut2:  # maintain the old links in a txt file
+				for t in keysList:
+					temerrut2.write(t + "\n")
+			for k in already_found_Keys:
+				del myDict[k]
+			if len(myDict) >= 1:
+				myDict = json.dumps(myDict)
+				return myDict
+			else:
+				return statusNG
+
+
+def create_message(from_addr, to_addr, subject, body, encoding):
+	msg = MIMEText(body, 'plain', encoding)
+	msg['From'] = from_addr
+	msg['To'] = to_addr
+	msg['Subject'] = Header(subject, encoding)
+	msg["Date"] = formatdate(localtime=True)
+	return msg
+
+
+def sendmail(subject, text):
+	msg = create_message(from_address, to_address, subject, text, mail_charset)
+	s = smtplib.SMTP('smtp.gmail.com', 587)
+	s.ehlo()
+	s.starttls()
+	s.ehlo()
+	s.login(from_address, from_password)
+	s.sendmail(from_address, to_address, msg.as_string())
+	s.close()
+
+
+def check_default():
+	d = datetime.datetime.today()
+	time = d.strftime("%d/%m/%Y %H:%M:%S")
+	mailsubject = u"KAP'ta aşağıdaki tarihli duyuru(lar)da temerrüt haber(ler)i olabilir..." + time
+	mailmessage = scraping(targeturl)
+	if mailmessage != statusNG:
+		sendmail(mailsubject, mailmessage)
+	else:
+		pass
+
+
+scheduler = BlockingScheduler()
+scheduler.add_job(check_default, 'interval', seconds=60)  # check_default function works at 60-second intervals
+scheduler.start()  
